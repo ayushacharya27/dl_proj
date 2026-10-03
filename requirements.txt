@@ -1,0 +1,27 @@
+# Core
+numpy>=1.26,<3
+pandas>=2.2,<3
+scikit-learn>=1.5,<2
+
+# Visualization
+matplotlib>=3.9,<4
+seaborn>=0.13,<1
+
+# Deep Learning
+torch>=2.5,<3
+
+# Graph Neural Networks
+torch-geometric>=2.6,<3
+
+# Time-series / decomposition
+statsmodels>=0.14,<1
+
+# Configuration
+pyyaml>=6.0,<7
+
+# Progress / utilities
+tqdm>=4.66,<5
+
+# Jupyter / experimentation
+jupyter>=1.0,<2
+ipykernel>=6.29,<7
