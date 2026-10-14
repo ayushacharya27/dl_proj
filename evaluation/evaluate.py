@@ -1,182 +1,187 @@
+
 import numpy as np
 import torch
-import joblib
+from pathlib import Path
 
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-
-from models.baseline import BaselineModel
 from data.dataset import create_dataloaders
 from data.graph import build_knn_graph
+from models.md_stgat import MDSTGAT
 
 
-CHECKPOINT_PATH = "checkpoints/baseline_best.pt"
-BATCH_SIZE = 32
-
-
-def get_device():
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-        print(f"Using GPU: {torch.cuda.get_device_name(0)}")
-    else:
-        device = torch.device("cpu")
-        print("Using CPU")
-    return device
+CHECKPOINT_PATH = "checkpoints/md_stgat_best.pt"
+OUTPUT_DIR = Path("evaluation")
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def main():
-    device = get_device()
+    device = torch.device(
+        "cuda" if torch.cuda.is_available() else "cpu"
+    )
+    print("Device:", device)
 
-    # ========================================================
-    # Test loader
-    # ========================================================
     _, _, test_loader = create_dataloaders(
-        batch_size=BATCH_SIZE,
-        num_workers=2
+        batch_size=32,
+        num_workers=2,
     )
 
-    # ========================================================
-    # Graph
-    # ========================================================
-    edges, _ = build_knn_graph(k=4)
-    edge_index = torch.tensor(edges.T, dtype=torch.long, device=device)
+    # Build the same station graph used during training.
+    result = build_knn_graph(k=4)
+    graph_data = result[0] if isinstance(result, tuple) else result
 
-    # ========================================================
-    # Model
-    # ========================================================
-    model = BaselineModel(
+    edge_index = torch.as_tensor(
+        graph_data, dtype=torch.long
+    )
+
+    if edge_index.ndim != 2:
+        raise ValueError(
+            f"Unexpected graph shape: {tuple(edge_index.shape)}"
+        )
+
+    if edge_index.shape[1] == 2 and edge_index.shape[0] != 2:
+        edge_index = edge_index.t().contiguous()
+    elif edge_index.shape[0] == 2:
+        edge_index = edge_index.contiguous()
+    else:
+        raise ValueError(
+            f"Expected [E,2] or [2,E], got {tuple(edge_index.shape)}"
+        )
+
+    edge_index = edge_index.to(device)
+
+    # Load the full MD-STGAT architecture and best checkpoint.
+    model = MDSTGAT(
         pollution_dim=6,
-        embedding_dim=64,
-        gat_heads=4,
-        temporal_heads=4,
-        temporal_layers=2,
-        forecast_horizon=24,
+        weather_dim=7,
+        hidden_dim=64,
         num_stations=12,
-        dropout=0.1
+        forecast_horizon=24,
+        gat_heads=4,
+        transformer_heads=4,
+        transformer_layers=2,
+        dropout=0.1,
     ).to(device)
 
-    checkpoint = torch.load(CHECKPOINT_PATH, map_location=device)
+    checkpoint = torch.load(
+        CHECKPOINT_PATH,
+        map_location=device,
+        weights_only=True,
+    )
+
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
 
-    print(f"\nLoaded checkpoint from epoch {checkpoint['epoch']}")
-    print(f"Validation MSE: {checkpoint['val_loss']:.6f}")
+    print("Loaded checkpoint:", CHECKPOINT_PATH)
+    print("Best epoch:", checkpoint["epoch"])
+    print(f"Best validation MSE: {checkpoint['val_mse']:.6f}")
 
-    # ========================================================
-    # Generate predictions
-    # ========================================================
     predictions = []
     targets = []
 
-    with torch.no_grad():
-        for X_pollution, _, Y in test_loader:
-            X_pollution = X_pollution.to(device, non_blocking=True)
+    with torch.inference_mode():
+        for X_pollution, X_weather, Y in test_loader:
+            X_pollution = X_pollution.to(device)
+            X_weather = X_weather.to(device)
 
-            prediction = model(X_pollution, edge_index)
+            forecast, _ = model(
+                X_pollution,
+                X_weather,
+                edge_index,
+            )
 
-            predictions.append(prediction.cpu().numpy())
+            predictions.append(forecast.cpu().numpy())
             targets.append(Y.numpy())
 
     predictions = np.concatenate(predictions, axis=0)
     targets = np.concatenate(targets, axis=0)
 
-    print("\nPrediction shape:", predictions.shape)
-    print("Target shape:", targets.shape)
+    if not np.isfinite(predictions).all():
+        raise ValueError("Predictions contain non-finite values.")
 
-    # ========================================================
-    # Inverse scaling
-    # ========================================================
-    pollution_scaler = joblib.load("data/processed/pollution_scaler.pkl")
+    # Inverse-transform the PM2.5 target using the existing
+    # training-fitted pollution scaler.
+    import joblib
 
-    # PM2.5 is feature index 0.
-    pm25_mean = pollution_scaler.mean_[0]
-    pm25_std = pollution_scaler.scale_[0]
+    scaler = joblib.load("data/processed/pollution_scaler.pkl")
+    pm25_index = 0  # PM2.5 is the first pollution feature.
 
-    predictions_real = predictions * pm25_std + pm25_mean
-    targets_real = targets * pm25_std + pm25_mean
+    mean = scaler.mean_[pm25_index]
+    scale = scaler.scale_[pm25_index]
 
-    # ========================================================
-    # Overall metrics
-    # ========================================================
-    pred_flat = predictions_real.reshape(-1)
-    target_flat = targets_real.reshape(-1)
+    predictions = predictions * scale + mean
+    targets = targets * scale + mean
 
-    mae = mean_absolute_error(target_flat, pred_flat)
-    rmse = np.sqrt(mean_squared_error(target_flat, pred_flat))
-    r2 = r2_score(target_flat, pred_flat)
+    errors = predictions - targets
 
-    print("\n========================================")
-    print("OVERALL TEST METRICS")
-    print("========================================")
+    mae = np.mean(np.abs(errors))
+    rmse = np.sqrt(np.mean(errors ** 2))
+
+    ss_res = np.sum(errors ** 2)
+    ss_tot = np.sum((targets - np.mean(targets)) ** 2)
+    r2 = 1 - ss_res / ss_tot if ss_tot > 0 else float("nan")
+
+    print("\n===== MD-STGAT TEST RESULTS =====")
     print(f"MAE  : {mae:.4f} µg/m³")
     print(f"RMSE : {rmse:.4f} µg/m³")
     print(f"R²   : {r2:.4f}")
+    print("Predictions shape:", predictions.shape)
+    print("Targets shape:", targets.shape)
 
-    # ========================================================
-    # Horizon-wise metrics
-    # ========================================================
-    print("\n========================================")
-    print("HORIZON-WISE METRICS")
-    print("========================================")
-    print(f"{'Hour':>6} {'MAE':>12} {'RMSE':>12}")
+    # Horizon-wise metrics.
+    horizon_rows = []
 
-    horizon_results = []
-    for h in range(24):
-        pred_h = predictions_real[:, h, :].reshape(-1)
-        target_h = targets_real[:, h, :].reshape(-1)
+    for h in range(predictions.shape[1]):
+        e = predictions[:, h, :] - targets[:, h, :]
+        horizon_rows.append([
+            h + 1,
+            np.mean(np.abs(e)),
+            np.sqrt(np.mean(e ** 2)),
+        ])
 
-        mae_h = mean_absolute_error(target_h, pred_h)
-        rmse_h = np.sqrt(mean_squared_error(target_h, pred_h))
+    horizon_path = OUTPUT_DIR / "md_stgat_horizon_metrics.csv"
+    np.savetxt(
+        horizon_path,
+        horizon_rows,
+        delimiter=",",
+        header="hour,MAE,RMSE",
+        comments="",
+        fmt=["%d", "%.6f", "%.6f"],
+    )
 
-        horizon_results.append([h + 1, mae_h, rmse_h])
-        print(f"{h + 1:>6} {mae_h:>12.4f} {rmse_h:>12.4f}")
-
-    # ========================================================
-    # Station-wise metrics
-    # ========================================================
+    # Station-wise metrics.
     station_names = [
         "Aotizhongxin", "Changping", "Dingling", "Dongsi",
         "Guanyuan", "Gucheng", "Huairou", "Nongzhanguan",
-        "Shunyi", "Tiantan", "Wanliu", "Wanshouxigong"
+        "Shunyi", "Tiantan", "Wanliu", "Wanshouxigong",
     ]
 
-    print("\n========================================")
-    print("STATION-WISE METRICS")
-    print("========================================")
-    print(f"{'Station':<20}{'MAE':>12}{'RMSE':>12}")
+    station_rows = []
 
-    station_results = []
-    for station_idx, station in enumerate(station_names):
-        pred_station = predictions_real[:, :, station_idx].reshape(-1)
-        target_station = targets_real[:, :, station_idx].reshape(-1)
+    for i, station in enumerate(station_names):
+        e = predictions[:, :, i] - targets[:, :, i]
+        station_rows.append([
+            station,
+            np.mean(np.abs(e)),
+            np.sqrt(np.mean(e ** 2)),
+        ])
 
-        mae_station = mean_absolute_error(target_station, pred_station)
-        rmse_station = np.sqrt(mean_squared_error(target_station, pred_station))
+    import csv
 
-        station_results.append([station, mae_station, rmse_station])
-        print(f"{station:<20}{mae_station:>12.4f}{rmse_station:>12.4f}")
+    station_path = OUTPUT_DIR / "md_stgat_station_metrics.csv"
+    with open(station_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["station", "MAE", "RMSE"])
+        writer.writerows(station_rows)
 
-    # ========================================================
-    # Save predictions
-    # ========================================================
     np.savez_compressed(
-        "evaluation/baseline_predictions.npz",
-        predictions=predictions_real,
-        targets=targets_real
+        OUTPUT_DIR / "md_stgat_predictions.npz",
+        predictions=predictions,
+        targets=targets,
     )
 
-    np.savetxt(
-        "evaluation/horizon_metrics.csv",
-        np.asarray(horizon_results),
-        delimiter=",",
-        header="hour,mae,rmse",
-        comments=""
-    )
-
-    print(
-        "\nSaved:"
-        "\n  evaluation/baseline_predictions.npz"
-        "\n  evaluation/horizon_metrics.csv"
-    )
+    print("\nSaved:")
+    print(horizon_path)
+    print(station_path)
+    print(OUTPUT_DIR / "md_stgat_predictions.npz")
 
 
 if __name__ == "__main__":

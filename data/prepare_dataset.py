@@ -48,6 +48,8 @@ ALL_NUMERIC = POLLUTION_FEATURES + [
     "DEWP",
     "RAIN",
     "WSPM",
+    "wd_sin",
+    "wd_cos",
 ]
 
 

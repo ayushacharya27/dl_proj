@@ -1,281 +1,117 @@
 # MD-STGAT
 
-**Multi-Modal Decoupled Spatio-Temporal Graph Attention Network for Multi-Station PM2.5 Forecasting**
+## Multi-Modal Decoupled Spatio-Temporal Graph Attention Network for Multi-Station PM2.5 Forecasting
 
-This project forecasts PM2.5 concentrations across **12 Beijing air-quality monitoring stations** using pollution, meteorological, spatial, and temporal information.
+**Authors**
+- **Ayush Acharya** — 23BPS1078
+- **Aduru Guhya** — 23BPS1009
 
-The implementation is being developed incrementally so that each research component can be tested independently before the complete model is trained. Because debugging a giant neural network all at once is apparently considered character building.
-
----
-
-## 1. Current Project Status
-
-### Completed
-
-- Raw Beijing Multi-Site Air Quality data loading and validation
-- 12-station alignment and timestamp handling
-- Missing-value analysis
-- Leakage-aware chronological train/validation/test split
-- Temporal + same-timestamp spatial imputation pipeline
-- Train-only feature scaling
-- Wind-direction encoding using sine/cosine
-- 72-hour input window
-- 24-hour multi-horizon prediction target
-- PyTorch dataset and dataloaders
-- Pollution encoder
-- Weather encoder
-- Spatial GAT for pollution
-- Spatial GAT for weather
-- Temporal Transformer
-- Corrected temporal cross-modal attention
-- Baseline model
-- Baseline training
-- Baseline evaluation
-- Horizon-wise and station-wise metrics
-- Full MD-STGAT architecture file
-
-### Full-model status
-
-The complete architecture has been implemented and the next immediate task is to verify its forward pass using the real station graph, followed by training and evaluation.
+MD-STGAT forecasts PM2.5 concentrations for 12 Beijing air-quality monitoring stations using historical pollution, meteorological, spatial, and temporal information. This README reflects the implementation and experiments completed as of **14 October 2026**, with remaining research work clearly separated from implemented features.
 
 ---
 
-# 2. Project Architecture
+## 1. Current Status
 
-The current intended pipeline is:
+### Implemented and tested
 
-```text
-                Pollution Features
-                       │
-                       ▼
-               Pollution Encoder
-                       │
-                       ▼
-                 Pollution GAT
-                       │
-                       │
-                       ├──────────────┐
-                       │              │
-                       │         Key / Value
-                       │              │
-                       ▼              ▼
-                  Cross-Modal Attention
-                       ▲
-                       │ Query
-                       │
-                       │
-                 Weather GAT
-                       ▲
-                       │
-                Weather Encoder
-                       ▲
-                       │
-                Weather Features
+- Loaded and validated the Beijing Multi-Site Air Quality dataset for 12 stations.
+- Aligned station observations by timestamp and inspected missing values.
+- Created chronological train/validation/test splits (70% / 15% / 15%).
+- Implemented temporal forward-fill for short gaps, same-timestamp spatial inverse-distance imputation, and station-level training-set median fallback.
+- Encoded wind direction as sine/cosine and fixed an initial NaN issue by including `wd_sin` and `wd_cos` in the numeric imputation feature list.
+- Fitted scalers on training data and generated 72-hour input windows with a 24-hour forecast target.
+- Implemented PyTorch datasets and dataloaders.
+- Implemented independent pollution and weather encoders and independent spatial GAT modules.
+- Implemented weather-query/pollution-key-value temporal cross-attention.
+- Implemented a temporal Transformer and direct 24-hour forecast head.
+- Trained and evaluated a pollution-only baseline.
+- Trained and evaluated the full MD-STGAT model.
+- Generated overall, horizon-wise, and station-wise evaluation metrics.
+- Created scripts for dataset, model-verification, and result visualizations.
 
-                       │
-                       ▼
-             Fused Representation
-                       │
-                       ▼
-            Temporal Transformer
-                       │
-                       ▼
-                 Forecast Head
-                       │
-                       ▼
-              24-hour PM2.5 forecast
-                 for 12 stations
-```
+### Current limitations
 
-Cross-attention is currently designed as:
-
-```text
-Weather = Query
-Pollution = Key
-Pollution = Value
-```
-
-The attention operates over the **72-hour pollution history for each station**.
+- The current spatial graph is static and based on geographic proximity; it is not a dynamic wind-aware graph.
+- The implemented training loss is MSE. The proposed graph-Laplacian spatial regularizer is **not yet integrated into training**.
+- STL or STL-inspired temporal decomposition is **not yet integrated into the full model**.
+- A persistence/last-value benchmark and controlled component ablations remain to be completed.
+- The full model showed overfitting: its best validation checkpoint was from epoch 1. Further tuning and repeated runs are needed.
+- Station coordinates should be verified against authoritative dataset metadata before being presented as precise geographic facts in a paper.
 
 ---
 
-# 3. Dataset
+## 2. Dataset
 
-The project uses the **UCI Beijing Multi-Site Air Quality Dataset** containing hourly observations from 12 monitoring stations.
+The project uses the UCI Beijing Multi-Site Air Quality dataset, containing hourly measurements from 12 stations.
 
-### Stations
+Stations:
 
-```text
-Aotizhongxin
-Changping
-Dingling
-Dongsi
-Guanyuan
-Gucheng
-Huairou
-Nongzhanguan
-Shunyi
-Tiantan
-Wanliu
-Wanshouxigong
-```
+1. Aotizhongxin
+2. Changping
+3. Dingling
+4. Dongsi
+5. Guanyuan
+6. Gucheng
+7. Huairou
+8. Nongzhanguan
+9. Shunyi
+10. Tiantan
+11. Wanliu
+12. Wanshouxigong
 
-Each station has **35,064 hourly records**.
+Each station has 35,064 hourly records, for **420,768 station-time rows** across all stations.
 
-Total combined observations:
+### Input features
 
-```text
-420,768 station-time rows
-```
+**Pollution (6 features):** `PM2.5`, `PM10`, `SO2`, `NO2`, `CO`, `O3`.
 
-### Raw features
+**Weather (7 features):** `TEMP`, `PRES`, `DEWP`, `RAIN`, `WSPM`, `wd_sin`, `wd_cos`.
 
-```text
-No
-year
-month
-day
-hour
-PM2.5
-PM10
-SO2
-NO2
-CO
-O3
-TEMP
-PRES
-DEWP
-RAIN
-wd
-WSPM
-station
-```
+### Window configuration
 
----
-
-# 4. Model Inputs
-
-### Pollution modality
-
-```text
-PM2.5
-PM10
-SO2
-NO2
-CO
-O3
-```
-
-Input size:
-
-```text
-6 features
-```
-
-### Weather modality
-
-```text
-TEMP
-PRES
-DEWP
-RAIN
-WSPM
-wind-direction sin
-wind-direction cos
-```
-
-Input size:
-
-```text
-7 features
-```
-
-### Sequence configuration
-
-```text
-Historical window = 72 hours
-Forecast horizon   = 24 hours
-Stations           = 12
-```
+- Historical input window: **72 hours**
+- Forecast horizon: **24 hours**
+- Stations: **12**
 
 Expected tensors:
 
 ```text
-Pollution:
-[B, 72, 12, 6]
-
-Weather:
-[B, 72, 12, 7]
-
-Target:
-[B, 24, 12]
+Pollution input: [B, 72, 12, 6]
+Weather input:   [B, 72, 12, 7]
+Target:          [B, 24, 12]
 ```
+
+### Chronological split
+
+| Split | Start | End | Window count |
+|---|---|---|---:|
+| Train | 2013-03-01 00:00 | 2015-12-18 15:00 | 24,449 |
+| Validation | 2015-12-18 16:00 | 2016-07-24 19:00 | 5,165 |
+| Test | 2016-07-24 20:00 | 2017-02-28 23:00 | 5,165 |
+
+Windows are built independently within each split. The preprocessing pipeline splits chronologically before fitting scalers, to help avoid leakage from future data.
 
 ---
 
-# 5. Data Preprocessing
+## 3. Preprocessing
 
-The preprocessing pipeline is in:
+Main file: `data/prepare_dataset.py`
 
-```text
-data/prepare_dataset.py
-```
+Processing steps:
 
-The important rule is:
+1. Encode compass wind direction as `wd_sin` and `wd_cos`.
+2. Split the dataset chronologically into train, validation, and test sets.
+3. Forward-fill recent past values for gaps up to six hours.
+4. Impute remaining missing numeric values using inverse-distance weighted observations from up to four nearest stations at the same timestamp.
+5. Use station-level medians computed from the training split as a fallback for remaining missing values.
+6. Fit scalers on training data and transform the splits.
+7. Create separate 72-hour input windows and 24-hour targets within each split.
 
-> The chronological split is performed before fitting imputers/scalers so that future information does not leak into training.
+After adding `wd_sin` and `wd_cos` to `ALL_NUMERIC`, the data diagnostic confirmed zero non-finite values in pollution, weather, and target tensors. A forward/backward diagnostic also confirmed finite model outputs, loss, gradients, and parameters after an optimizer step.
 
-### Split
+**Implementation note:** wind sine and cosine currently pass through the general numeric imputation pipeline. A more rigorous refinement would impute them together as a circular vector and normalize the vector after imputation.
 
-```text
-Train = 70%
-Validation = 15%
-Test = 15%
-```
-
-Current split:
-
-```text
-Train:
-2013-03-01 00:00
-→ 2015-12-18 15:00
-
-Validation:
-2015-12-18 16:00
-→ 2016-07-24 19:00
-
-Test:
-2016-07-24 20:00
-→ 2017-02-28 23:00
-```
-
-### Missing values
-
-Current preprocessing strategy:
-
-1. Causal temporal forward-fill for short gaps
-2. Same-timestamp spatial inverse-distance interpolation using neighboring stations
-3. Train-set median fallback
-4. Preserve chronological separation between train/validation/test
-
-All three processed splits currently contain zero missing values after preprocessing.
-
-### Scaling
-
-Standardization is fitted **only on the training data**.
-
-Saved scalers:
-
-```text
-data/processed/pollution_scaler.pkl
-data/processed/weather_scaler.pkl
-```
-
----
-
-# 6. Generated Dataset Files
-
-After preprocessing, the following files are generated:
+Generated files:
 
 ```text
 data/processed/
@@ -286,552 +122,406 @@ data/processed/
 └── weather_scaler.pkl
 ```
 
-Current shapes:
+Observed dataset shapes:
 
 ```text
-Train pollution = (24449, 72, 12, 6)
-Train weather   = (24449, 72, 12, 7)
-Train target    = (24449, 24, 12)
+Train pollution:      (24449, 72, 12, 6)
+Train weather:        (24449, 72, 12, 7)
+Train target:         (24449, 24, 12)
 
-Validation pollution = (5165, 72, 12, 6)
-Validation weather   = (5165, 72, 12, 7)
-Validation target    = (5165, 24, 12)
+Validation pollution: (5165, 72, 12, 6)
+Validation weather:   (5165, 72, 12, 7)
+Validation target:    (5165, 24, 12)
 
-Test pollution = (5165, 72, 12, 6)
-Test weather   = (5165, 72, 12, 7)
-Test target    = (5165, 24, 12)
+Test pollution:      (5165, 72, 12, 6)
+Test weather:        (5165, 72, 12, 7)
+Test target:         (5165, 24, 12)
 ```
 
 ---
 
-# 7. Graph Construction
+## 4. Station Graph
 
-Graph code:
+Files: `data/graph.py`, `data/station_metadata.py`
 
-```text
-data/graph.py
-data/station_metadata.py
-```
+The current graph is a **static physical-proximity graph**:
 
-The current graph is a static physical-proximity graph.
+1. Calculate pairwise station distances using the Haversine formula.
+2. Connect each station to its four nearest neighbors.
+3. Use the resulting 48 directed edges for spatial GAT operations.
 
-Method:
+The graph builder returns an edge list with shape `[48, 2]`, which is transposed to PyTorch Geometric's expected `edge_index` shape `[2, 48]`.
 
-```text
-Haversine distance
-        ↓
-4 nearest neighbors per station
-        ↓
-Directed station graph
-```
-
-With 12 stations:
-
-```text
-12 × 4 = 48 directed edges
-```
-
-The coordinates in `station_metadata.py` should be verified against the authoritative dataset metadata before being used as exact geographic values in a paper.
-
-The current graph represents **physical proximity**, not wind direction.
+Both modality-specific GATs use the same graph topology, but have independent trainable parameters.
 
 ---
 
-# 8. Data Loading
+## 5. Model Architecture
 
-Dataset implementation:
-
-```text
-data/dataset.py
-```
-
-Example:
-
-```python
-from data.dataset import create_dataloaders
-
-train_loader, val_loader, test_loader = create_dataloaders(
-    batch_size=32,
-    num_workers=2
-)
-```
-
-Expected batch:
+Full model file: `models/md_stgat.py`
 
 ```text
-Pollution: torch.Size([32, 72, 12, 6])
-Weather:   torch.Size([32, 72, 12, 7])
-Target:    torch.Size([32, 24, 12])
+Pollution input [B,72,12,6]             Weather input [B,72,12,7]
+          |                                          |
+  Pollution Encoder                          Weather Encoder
+      6 -> 64                                     7 -> 64
+          |                                          |
+    Pollution GAT                              Weather GAT
+          |                                          |
+          +------- Pollution: Key / Value ------------+
+                        Cross-Modal Attention
+                        Weather: Query
+                                 |
+                         Fused representation
+                                 |
+                       Temporal Transformer
+                                 |
+                      Select final timestep
+                                 |
+                           Forecast Head
+                                 |
+                       Output [B,24,12]
 ```
+
+### 5.1 Pollution Encoder
+
+File: `models/encoders.py`
+
+- Linear projection: 6 → 64
+- LayerNorm
+- GELU
+- Dropout
+
+Output: `[B, T, N, 64]`.
+
+### 5.2 Weather Encoder
+
+File: `models/weather_encoder.py`
+
+- Linear projection: 7 → 64
+- LayerNorm
+- GELU
+- Dropout
+
+Output: `[B, T, N, 64]`.
+
+### 5.3 Spatial GAT
+
+File: `models/gat.py`
+
+- Input dimension: 64
+- Hidden dimension: 64
+- Attention heads: 4
+- Dropout: 0.1
+- Separate GAT instances for pollution and weather
+
+The implementation batches the graph snapshots across batch and time dimensions instead of processing every graph snapshot in a separate Python loop.
+
+### 5.4 Cross-Modal Temporal Attention
+
+File: `models/cross_attention.py`
+
+- Weather features provide the Query (Q).
+- Historical pollution features provide the Key (K) and Value (V).
+- For each station, weather queries attend over the 72-hour pollution history.
+- Residual connections, layer normalization, and a feed-forward block are used after attention.
+
+Input tensors:
+
+```text
+Pollution: [B, 72, 12, 64]
+Weather:   [B, 72, 12, 64]
+```
+
+Outputs:
+
+```text
+Fused features: [B, 72, 12, 64]
+Attention:      [B, 12, 72, 72]
+```
+
+The earlier one-token attention version was replaced because a `[1, 1]` attention matrix cannot select meaningfully across the historical sequence.
+
+### 5.5 Temporal Transformer
+
+File: `models/temporal.py`
+
+- Hidden dimension: 64
+- Attention heads: 4
+- Encoder layers: 2
+- Feed-forward dimension: 256
+- Dropout: 0.1
+- Learnable positional embedding for the 72-hour input sequence
+
+Temporal self-attention is applied independently to each station's fused sequence. Output shape: `[B, 72, 12, 64]`.
+
+### 5.6 Forecast head
+
+The final historical representation is selected for each station, giving `[B, 12, 64]`. The forecast head applies `Linear(64 → 64)`, GELU, dropout, and `Linear(64 → 24)`, then permutes the result to `[B, 24, 12]`.
+
+### Model verification
+
+The model's forward pass was successfully tested on CUDA with the real 48-edge graph:
+
+```text
+Pollution input: (2, 72, 12, 6)
+Weather input:   (2, 72, 12, 7)
+Graph:           (2, 48)
+Forecast:        (2, 24, 12)
+Attention:       (2, 12, 72, 72)
+Trainable params: 170,456
+```
+
+The full model has **170,456 trainable parameters**. The pollution-only baseline has **115,416 trainable parameters**.
 
 ---
 
-# 9. Model Components
+## 6. Training
 
-## 9.1 Pollution Encoder
+### Training configuration
 
-File:
+The baseline and full model used the following main settings:
 
-```text
-models/encoders.py
-```
+| Setting | Value |
+|---|---|
+| Batch size | 32 |
+| Maximum epochs | 30 |
+| Optimizer | AdamW |
+| Initial learning rate | 0.001 |
+| Weight decay | 0.0001 |
+| Prediction loss | MSE |
+| Gradient clipping | 1.0 |
+| Scheduler | ReduceLROnPlateau, factor 0.5, patience 2 |
+| Early stopping patience | 5 epochs |
+| Random seed for full-model training script | 42 |
 
-Current structure:
+### Baseline
 
-```text
-Linear(6 → 64)
-LayerNorm
-GELU
-Dropout
-```
+Training script: `training/train.py`
 
-Output:
+Best checkpoint: `checkpoints/baseline_best.pt`
 
-```text
-[B, T, N, 64]
-```
+- Best validation epoch: 6
+- Best validation MSE: 0.627643
 
----
+### Full MD-STGAT
 
-## 9.2 Weather Encoder
+Training script: `training/train_md_stgat.py`
 
-File:
+Best checkpoint: `checkpoints/md_stgat_best.pt`
 
-```text
-models/weather_encoder.py
-```
-
-Current structure mirrors the pollution encoder:
-
-```text
-Linear(7 → 64)
-LayerNorm
-GELU
-Dropout
-```
-
-Output:
-
-```text
-[B, T, N, 64]
-```
+- Best validation epoch: 1
+- Best validation MSE: 0.669713
+- Early stopping triggered at epoch 6 after validation performance failed to improve.
+- Training MSE continued to decrease while validation MSE increased, indicating overfitting.
 
 ---
 
-## 9.3 Spatial GAT
+## 7. Evaluation Results
 
-File:
+### Overall test-set metrics
 
-```text
-models/gat.py
-```
+| Metric | Baseline | Full MD-STGAT | Comparison |
+|---|---:|---:|---|
+| MAE (µg/m³) | 45.1195 | 46.2771 | MD-STGAT is 2.57% higher (worse) |
+| RMSE (µg/m³) | 74.3686 | 72.4479 | MD-STGAT is 2.58% lower (better) |
+| R² | 0.3599 | 0.3925 | MD-STGAT is higher by 0.0326 |
 
-Current configuration:
+The full model has lower RMSE and higher R² than the recorded baseline, but a slightly higher MAE. Results therefore show a mixed improvement rather than universal improvement across metrics.
 
-```text
-Input dimension = 64
-Hidden dimension = 64
-Attention heads = 4
-Dropout = 0.1
-```
+**Fair-comparison check:** before using these as final research claims, verify both evaluations used identical processed test targets, the same scaler artifacts, and the same inverse-transform procedure.
 
-The implementation batches all `B × T` graph snapshots rather than running a Python loop over every graph.
+### Full MD-STGAT: selected horizon-wise test metrics
 
-Two independent GAT blocks are now used:
+| Forecast horizon | MAE (µg/m³) | RMSE (µg/m³) |
+|---|---:|---:|
+| 1 hour | 35.96 | 57.94 |
+| 6 hours | 40.67 | 66.03 |
+| 12 hours | 46.23 | 72.81 |
+| 18 hours | 50.87 | 77.67 |
+| 24 hours | 55.21 | 81.65 |
 
-```text
-Pollution GAT
-Weather GAT
-```
+Errors generally increase at longer horizons.
 
-This preserves the decoupled modality design.
+### Full MD-STGAT: station RMSE
 
----
+| Station | RMSE (µg/m³) |
+|---|---:|
+| Dingling | 59.9309 |
+| Huairou | 60.2416 |
+| Changping | 62.1034 |
+| Wanliu | 69.3945 |
+| Aotizhongxin | 71.7996 |
+| Shunyi | 73.2768 |
+| Tiantan | 74.2051 |
+| Guanyuan | 74.6933 |
+| Nongzhanguan | 77.6236 |
+| Dongsi | 79.9818 |
+| Wanshouxigong | 80.2357 |
+| Gucheng | 81.3679 |
 
-## 9.4 Cross-Modal Attention
+Dingling has the lowest station RMSE among these results; Gucheng has the highest. These are observations from the metrics and do not, by themselves, explain why stations differ.
 
-File:
+### Evaluation output files
 
-```text
-models/cross_attention.py
-```
-
-Current design:
-
-```text
-Weather → Query
-Pollution → Key
-Pollution → Value
-```
-
-For every station, the weather representation can attend across the 72-hour pollution history.
-
-Input:
-
-```text
-Pollution = [B, 72, 12, 64]
-Weather   = [B, 72, 12, 64]
-```
-
-Output:
-
-```text
-Fused = [B, 72, 12, 64]
-```
-
-Attention representation:
-
-```text
-[B, 12, 72, 72]
-```
-
-Current tested configuration:
-
-```text
-Parameters = 49,984
-```
-
-The previous one-token implementation was discarded because a `[1,1]` attention matrix does not provide meaningful attention over history.
-
----
-
-## 9.5 Temporal Transformer
-
-File:
-
-```text
-models/temporal.py
-```
-
-Current configuration:
-
-```text
-Hidden dimension = 64
-Attention heads = 4
-Transformer layers = 2
-Feed-forward dimension = 256
-Dropout = 0.1
-```
-
-Temporal attention is applied independently to each station.
-
-Input:
-
-```text
-[B, 72, 12, 64]
-```
-
-Output:
-
-```text
-[B, 72, 12, 64]
-```
-
----
-
-## 9.6 Baseline Model
-
-File:
-
-```text
-models/baseline.py
-```
-
-Current baseline:
-
-```text
-Pollution Encoder
-        ↓
-Pollution GAT
-        ↓
-Temporal Transformer
-        ↓
-Forecast Head
-```
-
-Parameter count:
-
-```text
-115,416
-```
-
-The baseline was trained successfully on the RTX 3050 Laptop GPU.
-
----
-
-## 9.7 Full MD-STGAT
-
-File:
-
-```text
-models/md_stgat.py
-```
-
-Current pipeline:
-
-```text
-Pollution Encoder
-        ↓
-Pollution GAT
-        ↓
-        P ───────┐
-                 │
-                 │ Key / Value
-                 ▼
-            Cross Attention
-                 ▲
-                 │ Query
-                 │
-        W ───────┘
-        ↑
-Weather GAT
-        ↑
-Weather Encoder
-
-        ↓
-Temporal Transformer
-        ↓
-Forecast Head
-        ↓
-[B, 24, 12]
-```
-
-The full-model forward pass must now be checked with the real graph before training.
-
----
-
-# 10. Baseline Training
-
-Training file:
-
-```text
-training/train.py
-```
-
-Current configuration:
-
-```text
-Batch size = 32
-Maximum epochs = 30
-Optimizer = AdamW
-Learning rate = 1e-3
-Weight decay = 1e-4
-Gradient clipping = 1.0
-Scheduler = ReduceLROnPlateau
-Early stopping patience = 5
-```
-
-Best baseline checkpoint:
-
-```text
-checkpoints/baseline_best.pt
-```
-
-Best validation epoch:
-
-```text
-Epoch 6
-Validation MSE = 0.627643
-```
-
-Training was stopped early after validation performance stopped improving.
-
----
-
-# 11. Baseline Results
-
-Evaluation file:
-
-```text
-evaluation/evaluate.py
-```
-
-Test results for the current baseline:
-
-```text
-MAE  = 45.1195 µg/m³
-RMSE = 74.3686 µg/m³
-R²   = 0.3599
-```
-
-The model's error increases with the forecasting horizon, which is expected for a 24-hour recursive-information problem, although this model performs direct multi-horizon prediction.
-
-### Horizon RMSE
-
-```text
-H01  30.49
-H02  36.97
-H03  43.43
-H04  49.08
-H05  54.02
-H06  58.49
-H07  62.38
-H08  65.92
-H09  68.90
-H10  71.70
-H11  74.22
-H12  76.49
-H13  78.86
-H14  80.88
-H15  82.77
-H16  83.73
-H17  85.17
-H18  86.71
-H19  87.80
-H20  89.02
-H21  89.59
-H22  91.10
-H23  91.93
-H24  92.29
-```
-
-Saved evaluation files:
+Baseline:
 
 ```text
 evaluation/baseline_predictions.npz
 evaluation/horizon_metrics.csv
 ```
 
+Full MD-STGAT:
+
+```text
+evaluation/md_stgat_predictions.npz
+evaluation/md_stgat_horizon_metrics.csv
+evaluation/md_stgat_station_metrics.csv
+```
+
+The `.npz` prediction archive stores predictions and targets; CSV files store the corresponding horizon-wise and station-wise metrics.
+
 ---
 
-# 12. How To Run The Project
+## 8. Visualizations
 
-Run commands from the project root:
+The project includes scripts to generate figures for data inspection, implementation verification, and result analysis.
+
+### Dataset visualizations
+
+Script: `visualize_md_stgat_data.py`
+
+Intended outputs:
+
+```text
+figures/ppt_missing_values.png
+figures/ppt_station_network.png
+```
+
+The missing-value chart visualizes the raw dataset's missing-data profile. The station-network chart visualizes the physical-proximity graph.
+
+Run from the project root:
+
+```bash
+python visualize_md_stgat_data.py
+```
+
+### Result visualizations
+
+Script: `evaluation/visualize_md_stgat_results.py`
+
+Outputs:
+
+```text
+figures/md_stgat_rmse_by_station.png
+figures/md_stgat_key_findings.png
+```
+
+These figures use the saved station-wise and horizon-wise CSV results to show RMSE by station and summarize the best/worst stations and change in error with forecast horizon.
+
+Run:
+
+```bash
+python -m evaluation.visualize_md_stgat_results
+```
+
+A separate horizon plot can be generated with `evaluation/plot_horizon_metrics.py` if that file is present in the project.
+
+---
+
+## 9. How to Run
+
+Run all commands from the project root (`~/dl_proj`). The project's virtual environment directory is named `dl_proj`.
+
+### Activate the environment
 
 ```bash
 cd ~/dl_proj
+source dl_proj/bin/activate
 ```
 
-Activate the virtual environment:
-
-```bash
-source venv/bin/activate
-```
-
-If your environment has a different name, activate that environment instead.
-
----
-
-## Step 1: Check the environment
-
-```bash
-python --version
-python -c "import torch; print(torch.__version__)"
-python -c "import torch; print('CUDA:', torch.cuda.is_available())"
-```
-
-The current setup successfully used the NVIDIA RTX 3050 Laptop GPU.
-
----
-
-## Step 2: Prepare the dataset
-
-Run:
+### Rebuild the processed dataset
 
 ```bash
 python -m data.prepare_dataset
 ```
 
-This should generate:
-
-```text
-data/processed/train.npz
-data/processed/val.npz
-data/processed/test.npz
-data/processed/pollution_scaler.pkl
-data/processed/weather_scaler.pkl
-```
-
----
-
-## Step 3: Test the dataset loader
+### Check dataset batches
 
 ```bash
 python -m data.dataset
 ```
 
-Verify:
+Expected batch shapes:
 
 ```text
-Pollution batch = [32,72,12,6]
-Weather batch   = [32,72,12,7]
-Target batch    = [32,24,12]
+Pollution: [32, 72, 12, 6]
+Weather:   [32, 72, 12, 7]
+Target:    [32, 24, 12]
 ```
 
----
-
-## Step 4: Test individual model components
-
-Pollution encoder:
+### Test model components
 
 ```bash
 python -m models.encoders
-```
-
-Weather encoder:
-
-```bash
 python -m models.weather_encoder
-```
-
-Spatial GAT:
-
-```bash
 python -m models.gat
-```
-
-Cross-modal attention:
-
-```bash
 python -m models.cross_attention
-```
-
-Temporal Transformer:
-
-```bash
 python -m models.temporal
+python -m models.baseline
+python -m models.md_stgat
 ```
+
+### Train models
 
 Baseline:
 
 ```bash
-python -m models.baseline
+python -m training.train
 ```
 
 Full MD-STGAT:
 
 ```bash
-python -m models.md_stgat
+python -m training.train_md_stgat
 ```
 
-For the full model, confirm:
+### Evaluate models
 
-```text
-Pollution input: [4,72,12,6]
-Weather input:   [4,72,12,7]
-Forecast:        [4,24,12]
-Attention:       [4,12,72,72]
+Baseline:
+
+```bash
+python -m evaluation.evaluate
 ```
 
-Use the actual station graph from `data/graph.py` for the final test rather than a random graph.
+Full MD-STGAT:
+
+```bash
+python -m evaluation.evaluate_md_stgat
+```
+
+### Run diagnostics
+
+If `debug_nan.py` is present in the project root, it can check input tensors, forecasts, loss, gradients, and parameters for non-finite values:
+
+```bash
+python debug_nan.py
+```
 
 ---
 
-# 13. Current Directory Structure
+## 10. Project Structure
 
 ```text
 MD-STGAT/
-│
 ├── data/
 │   ├── raw/
 │   ├── processed/
-│   ├── preprocessing.py
 │   ├── graph.py
 │   ├── station_metadata.py
 │   ├── imputation.py
 │   ├── prepare_dataset.py
 │   └── dataset.py
-│
 ├── models/
 │   ├── encoders.py
 │   ├── weather_encoder.py
@@ -840,303 +530,55 @@ MD-STGAT/
 │   ├── temporal.py
 │   ├── baseline.py
 │   └── md_stgat.py
-│
 ├── losses/
 │   ├── prediction_loss.py
 │   └── physics_loss.py
-│
 ├── training/
 │   ├── train.py
+│   ├── train_md_stgat.py
 │   ├── validate.py
 │   └── early_stopping.py
-│
 ├── evaluation/
-│   ├── metrics.py
 │   ├── evaluate.py
+│   ├── evaluate_md_stgat.py
+│   ├── metrics.py
 │   ├── baselines.py
-│   └── ablation.py
-│
-├── configs/
-│   └── config.yaml
-│
-├── notebooks/
-│   ├── 01_data_analysis.ipynb
-│   ├── 02_graph_analysis.ipynb
-│   └── 03_results.ipynb
-│
+│   ├── ablation.py
+│   ├── visualize_md_stgat_results.py
+│   └── plot_horizon_metrics.py
+├── figures/
 ├── checkpoints/
-│
+├── visualize_md_stgat_data.py
+├── debug_nan.py
 ├── requirements.txt
-│
 └── README.md
 ```
 
----
-
-# 14. Next Steps
-
-The remaining work should be done in this order.
-
-## Phase 1: Validate the full architecture
-
-Run:
-
-```bash
-python -m models.md_stgat
-```
-
-Make sure the full model produces:
-
-```text
-Forecast: [B,24,12]
-Attention: [B,12,72,72]
-```
-
-Also verify GPU memory usage.
+Some listed research-support modules may exist as placeholders or remain to be completed; the implemented and tested parts are described in the status sections above.
 
 ---
 
-## Phase 2: Train MD-STGAT
+## 11. Remaining Work
 
-Create or update:
+Recommended order:
 
-```text
-training/train_md_stgat.py
-```
-
-Use the same data splits and training protocol as the baseline so the comparison is fair.
-
-Start with:
-
-```text
-Loss = MSE
-Optimizer = AdamW
-Early stopping
-Gradient clipping
-Learning-rate scheduler
-```
-
-Do not change several training variables at once when comparing models.
+1. **Verify evaluation fairness:** confirm the baseline and full MD-STGAT results use identical test windows, target/scaler artifacts, and inverse transformations.
+2. **Tune overfitting:** test smaller hidden dimensions and stronger regularization, using validation performance for model selection.
+3. **Add a persistence baseline:** compare against predicting future PM2.5 from the most recent observed value.
+4. **Run ablations:** separately remove or share the weather GAT, cross-attention, and other proposed components to measure their contributions.
+5. **Implement spatial regularization:** integrate a graph-Laplacian smoothness term into the training loss and test its effect. This should be described as spatial smoothness regularization, not automatically as mass conservation.
+6. **Implement temporal decomposition:** add the planned trend/residual decomposition. Call it STL-inspired unless actual STL is used.
+7. **Improve wind-direction imputation:** process sine/cosine components as a circular vector and normalize the result.
+8. **Inspect actual-versus-predicted sequences and attention maps:** use these to understand error patterns, not to claim a causal explanation by themselves.
+9. **Repeat training with multiple seeds:** report variability before drawing strong conclusions.
+10. **Verify station metadata and document all experimental settings** before preparing a final paper.
 
 ---
 
-## Phase 3: Evaluate MD-STGAT
+## 12. Current Summary
 
-Run evaluation using the test set and inverse-transform PM2.5 values.
+The project now has a functioning preprocessing pipeline, a verified baseline, a full MD-STGAT model with dual modality encoders and GATs, weather-conditioned temporal cross-attention, a temporal Transformer, direct 24-hour predictions, and test-set evaluation artifacts.
 
-Report:
+The current full-model test results are **MAE 46.2771 µg/m³, RMSE 72.4479 µg/m³, and R² 0.3925**. Relative to the recorded baseline, RMSE and R² are better while MAE is worse. The model also shows validation overfitting, and the comparison must be rechecked against identical preprocessing artifacts before making final research claims.
 
-```text
-Overall MAE
-Overall RMSE
-R²
-Horizon-wise MAE
-Horizon-wise RMSE
-Station-wise MAE
-Station-wise RMSE
-```
-
-Compare against the baseline.
-
-Important:
-
-> Do not claim that MD-STGAT improves performance until the actual test results show it.
-
----
-
-## Phase 4: Add the spatial regularization term
-
-Planned loss:
-
-```text
-Total Loss =
-Prediction Loss
-+
-λ × Graph Laplacian Smoothness Loss
-```
-
-The planned spatial term is based on graph smoothness:
-
-```text
-yᵀ L y
-```
-
-where `L` is the graph Laplacian.
-
-This encourages spatially connected stations to have compatible predictions.
-
-It should be described as a **spatial smoothness regularizer**, not as a generic "mass conservation" law.
-
----
-
-## Phase 5: Build the ablation study
-
-The research contribution needs controlled experiments.
-
-Minimum useful ablations:
-
-```text
-A. Pollution Encoder + GAT + Transformer
-B. A + Weather Encoder/GAT
-C. B + Cross Attention
-D. C + Temporal Decomposition
-E. D + Spatial Regularization
-F. Full MD-STGAT
-```
-
-This allows each proposed component to be evaluated separately.
-
----
-
-## Phase 6: Add temporal decomposition
-
-The intended idea is:
-
-```text
-Input sequence
-      ↓
-Trend component
-      +
-Residual component
-      ↓
-Temporal modeling
-```
-
-The implementation should be described accurately.
-
-If a moving-average style decomposition is used, call it:
-
-```text
-STL-inspired decomposition
-```
-
-Do not call it full STL unless the actual STL procedure is implemented.
-
----
-
-## Phase 7: Establish stronger baselines
-
-Before writing performance claims, include simple reference models.
-
-At minimum:
-
-```text
-Persistence / last-value baseline
-Historical mean baseline
-Current neural baseline
-Full MD-STGAT
-```
-
-Additional published-model comparisons can be added later depending on the research scope.
-
----
-
-## Phase 8: Visualization and analysis
-
-Generate:
-
-```text
-Actual vs predicted PM2.5
-Prediction error by horizon
-Prediction error by station
-Attention heatmaps
-Training/validation loss curves
-Station graph visualization
-```
-
-For cross-attention:
-
-```text
-X-axis = historical pollution timestep
-Y-axis = weather query timestep
-```
-
-This can help analyze whether the model is actually learning meaningful temporal relationships rather than merely producing numbers with neural-network confidence.
-
----
-
-# 15. Research Checklist Before Final Results
-
-Before considering the model paper-ready, verify:
-
-```text
-[ ] Dataset source documented
-[ ] Station metadata verified
-[ ] Chronological split documented
-[ ] No train/test preprocessing leakage
-[ ] Missing-data procedure documented
-[ ] Graph construction documented
-[ ] Baseline implemented
-[ ] Full MD-STGAT trained
-[ ] Test metrics computed after training
-[ ] Persistence baseline included
-[ ] Ablation experiments completed
-[ ] Hyperparameters documented
-[ ] Random seeds documented
-[ ] Multiple runs / variability reported
-[ ] Attention visualizations generated
-[ ] Error analysis completed
-```
-
----
-
-# 16. Immediate Command Sequence
-
-The next practical sequence is:
-
-```bash
-# 1. Activate environment
-source venv/bin/activate
-
-# 2. Verify preprocessing artifacts
-python -m data.prepare_dataset
-
-# 3. Verify dataset
-python -m data.dataset
-
-# 4. Verify individual components
-python -m models.encoders
-python -m models.weather_encoder
-python -m models.gat
-python -m models.cross_attention
-python -m models.temporal
-
-# 5. Verify complete model
-python -m models.md_stgat
-```
-
-After the full forward pass succeeds:
-
-```text
-FULL MODEL FORWARD PASS
-        ↓
-MD-STGAT TRAINING
-        ↓
-TEST EVALUATION
-        ↓
-BASELINE COMPARISON
-        ↓
-SPATIAL REGULARIZATION
-        ↓
-ABLATIONS
-        ↓
-FINAL ANALYSIS
-```
-
----
-
-# 17. Current Scientific State
-
-At the current stage, the project has a functioning data pipeline, a validated baseline, and the main multimodal architecture components.
-
-The baseline establishes a reference point:
-
-```text
-MAE  = 45.1195 µg/m³
-RMSE = 74.3686 µg/m³
-R²   = 0.3599
-```
-
-The next meaningful milestone is **training the complete MD-STGAT under the same experimental conditions and comparing it against this baseline**.
-
-No performance improvement should be assumed in advance. Neural networks, like politicians and startup pitches, are extremely enthusiastic about their potential and occasionally less impressive when measured.
+The physics-guided regularizer, temporal decomposition, persistence comparison, and ablation studies remain future work. No performance improvement from those planned components should be claimed until they are implemented and evaluated.
